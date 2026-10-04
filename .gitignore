@@ -1,0 +1,8 @@
+# Build output
+/app/target/
+
+# FFmpeg SDK (download separately, see README)
+/third_party/
+
+# Packaged build output
+/WebM Studio/
