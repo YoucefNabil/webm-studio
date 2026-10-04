@@ -272,7 +272,7 @@ fn rand_seed() -> u128 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
     Pass(u32),
-    Done { bytes: u64 },
+    Done { bytes: u64, secs: f64 },
     Failed(String),
     Cancelled,
 }
@@ -312,7 +312,10 @@ impl RenderJob {
                         let _ = std::fs::remove_file(&plan.output);
                         Phase::Cancelled
                     }
-                    Ok(()) => Phase::Done { bytes: std::fs::metadata(&plan.output).map(|m| m.len()).unwrap_or(0) },
+                    Ok(()) => Phase::Done {
+                        bytes: std::fs::metadata(&plan.output).map(|m| m.len()).unwrap_or(0),
+                        secs: st.lock().started.elapsed().as_secs_f64(),
+                    },
                     Err(e) => Phase::Failed(e.to_string()),
                 };
                 let _ = std::fs::remove_dir_all(&plan.workdir);

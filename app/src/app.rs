@@ -88,6 +88,8 @@ pub struct App {
 
     pub playing: bool,
     play_origin: f64,
+    /// Where playback was paused; resuming from here keeps `play_origin` so Stop still returns to it.
+    paused_at: Option<f64>,
     play_start_t: f64,
     play_instant: Instant,
     pub loop_play: bool,
@@ -142,6 +144,7 @@ impl App {
             cursor: 0.0,
             playing: false,
             play_origin: 0.0,
+            paused_at: None,
             play_start_t: 0.0,
             play_instant: Instant::now(),
             loop_play: false,
@@ -397,6 +400,7 @@ impl App {
         if self.playing {
             return;
         }
+        let resuming = self.paused_at.take() == Some(self.cursor);
         let end = self.project.timeline.end();
         if self.loop_play && let Some((a, b)) = self.project.timeline.region {
             if self.cursor < a || self.cursor >= b {
@@ -405,13 +409,19 @@ impl App {
         } else if self.cursor >= end - 1e-3 {
             self.cursor = 0.0;
         }
-        self.play_origin = self.cursor;
+        if !resuming {
+            self.play_origin = self.cursor;
+        }
         self.start_playback(self.cursor);
     }
 
-    /// Vegas "Stop": cursor returns to where playback started.
+    /// Vegas "Stop": cursor returns to where playback started (also after a pause).
     pub fn stop(&mut self) {
         if !self.playing {
+            if self.paused_at.take() == Some(self.cursor) {
+                self.cursor = self.play_origin;
+                self.video.seek(self.cursor);
+            }
             return;
         }
         self.playing = false;
@@ -431,6 +441,7 @@ impl App {
         self.audio.stop();
         self.video.stop();
         self.cursor = t;
+        self.paused_at = Some(t);
         self.video.seek(t);
     }
 
@@ -628,10 +639,13 @@ impl App {
             self.ignore_grouping = !self.ignore_grouping;
         }
         if pressed(none, Key::Space) {
-            if self.playing { self.stop() } else { self.play() }
+            if self.playing { self.pause() } else { self.play() }
         }
-        if pressed(none, Key::Enter) || pressed(none, Key::K) {
-            if self.playing { self.pause() }
+        if pressed(none, Key::Enter) {
+            self.stop();
+        }
+        if pressed(none, Key::K) {
+            self.pause();
         }
         if pressed(none, Key::L) {
             self.play();
@@ -840,13 +854,13 @@ impl App {
             self.seek(t);
         }
         if self.playing {
-            if ui.button(big("⏸")).on_hover_text("Pause (Enter)").clicked() {
+            if ui.button(big("⏸")).on_hover_text("Pause (Space)").clicked() {
                 self.pause();
             }
         } else if ui.button(big("▶")).on_hover_text("Play (Space)").clicked() {
             self.play();
         }
-        if ui.button(big("⏹")).on_hover_text("Stop (Space) — returns to start position").clicked() {
+        if ui.button(big("⏹")).on_hover_text("Stop (Enter) — returns to start position").clicked() {
             self.stop();
         }
         if ui.button(big("⏩")).on_hover_text("Next frame (→)").clicked() {
@@ -1068,18 +1082,23 @@ impl App {
         if let Some(job) = &self.render_job {
             let st = job.status.lock().clone();
             match &st.phase {
-                Phase::Done { bytes } => {
+                Phase::Done { bytes, secs } => {
                     let mib = *bytes as f64 / 1048576.0;
                     let ok = *bytes <= st.target_bytes;
                     ui.label(
-                        RichText::new(format!("✔ Done in {:.0}s — {mib:.2} MiB (target {:.2})", st.started.elapsed().as_secs_f64(), st.target_bytes as f64 / 1048576.0))
+                        RichText::new(format!("✔ Done in {secs:.0}s — {mib:.2} MiB (target {:.2})", st.target_bytes as f64 / 1048576.0))
                             .color(if ok { crate::theme::OK } else { crate::theme::WARN }),
                     );
                     if !ok {
                         ui.label(RichText::new("Over target — lower the size a bit or add a safety margin.").color(crate::theme::WARN));
                     }
                     if ui.button("Show in folder").clicked() {
-                        let _ = std::process::Command::new("explorer").arg(format!("/select,{}", st.output.display())).spawn();
+                        // Explorer doesn't parse Rust's `"/select,C:\a b\x.webm"` quoting (falls back to Documents),
+                        // so pass `/select,"path"` verbatim with backslashes.
+                        use std::os::windows::process::CommandExt;
+                        let path = std::path::absolute(&st.output).unwrap_or_else(|_| st.output.clone());
+                        let path = path.display().to_string().replace('/', "\\");
+                        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn();
                     }
                 }
                 Phase::Failed(e) => {
@@ -1172,8 +1191,9 @@ impl eframe::App for App {
 }
 
 pub const SHORTCUTS: &str = "\
-Space        Play / Stop (returns to start)
-Enter / K    Pause here
+Space        Play / Pause
+Enter        Stop (returns to start)
+K            Pause here
 L            Play
 ← / →        Previous / next frame
 Ctrl+← / →   Previous / next edit point
