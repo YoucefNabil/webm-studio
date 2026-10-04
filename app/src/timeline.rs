@@ -409,8 +409,11 @@ impl App {
                             Hit::ClipRight(_) => Some(DragKind::TrimRight { ids: self.grouped(&HashSet::from([id])) }),
                         }
                     }
-                    // Like Vegas: dragging empty track space makes a time selection (= region).
-                    None => Some(DragKind::RegionNew { anchor: self.snap_point(lay, t0.max(0.0)), prev: self.project.timeline.region }),
+                    // Dragging empty track space scrubs the cursor; regions are only made in the region bar.
+                    None => {
+                        self.selection.clear();
+                        Some(DragKind::Scrub)
+                    }
                 }
             };
             if let Some(kind) = kind {

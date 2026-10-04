@@ -1209,7 +1209,8 @@ Wheel / ↑ ↓  Zoom in / out (the wheel zooms around the mouse)
 \\            Zoom to fit the whole timeline
 Shift+wheel  Scroll timeline (or middle-drag, or the scroll bar)
 Scroll bar   Drag to scroll, drag its ends to zoom, double-click to fit
-Drag in region bar or empty track space   Set region
+Drag in region bar                        Set region
+Drag empty track space                    Move cursor
 Drag region pins / bar                    Resize / move region
 Double-click clip     Region = clip
 Edit ▸ Clear loop region                  Remove region
