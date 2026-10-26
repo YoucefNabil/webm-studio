@@ -4,6 +4,12 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico");
+        res.compile().expect("embed exe icon");
+    }
     let Ok(dir) = std::env::var("FFMPEG_DIR") else { return };
     let bin = PathBuf::from(dir).join("bin");
     // OUT_DIR = target/<profile>/build/<pkg>/out → target/<profile>

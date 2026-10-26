@@ -15,7 +15,7 @@ fn main() -> eframe::Result<()> {
     ffmpeg_next::init().expect("ffmpeg init");
     ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("WebM Studio").with_inner_size([1500.0, 920.0]).with_min_inner_size([900.0, 600.0]).with_drag_and_drop(true),
+        viewport: egui::ViewportBuilder::default().with_title("WebM Studio").with_inner_size([1500.0, 920.0]).with_min_inner_size([900.0, 600.0]).with_drag_and_drop(true).with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("icon")),
         ..Default::default()
     };
     eframe::run_native("WebM Studio", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
