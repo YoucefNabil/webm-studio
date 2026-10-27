@@ -371,8 +371,9 @@ pub struct RenderSettings {
     pub auto_alt_ref: u32,
     pub lag_in_frames: u32,
     pub keyframe_sec: f64,
-    /// Extra safety margin in percent subtracted from the budget.
-    pub margin_pct: f64,
+    /// Safety margin in percent subtracted from the budget (covers container overhead and
+    /// 2-pass overshoot). Renamed from `margin_pct` so old saves pick up the new default.
+    pub safety_pct: f64,
     /// None = automatic, chosen from output height like the .bat.
     pub tiles: Option<(u32, u32)>,
     /// Empty = look next to the app / on PATH.
@@ -397,7 +398,7 @@ impl Default for RenderSettings {
             auto_alt_ref: 1,
             lag_in_frames: 25,
             keyframe_sec: 4.0,
-            margin_pct: 0.0,
+            safety_pct: 2.0,
             tiles: None,
             ffmpeg_path: String::new(),
         }
@@ -410,8 +411,9 @@ impl RenderSettings {
     }
 
     pub fn effective_tiles(&self) -> (u32, u32) {
+        // Tile rows cost compression and add little speed once row-mt is on, so auto keeps them at 0.
         self.tiles.unwrap_or(if self.height >= 1080 {
-            (2, 1)
+            (2, 0)
         } else if self.height >= 720 {
             (2, 0)
         } else {
@@ -419,13 +421,13 @@ impl RenderSettings {
         })
     }
 
-    /// Video bitrate in ffmpeg kbps (1k = 1000 bit/s), same budget convention as the .bat
-    /// (MiB * 8192 "kbits"), but with fractional duration and audio = rate * duration.
+    /// Video bitrate in ffmpeg kbps (1k = 1000 bit/s). The budget is the real MiB size in
+    /// kbits (1 MiB = 8388.608 kbits); the .bat used MiB * 8192, which landed ~2.3% short.
     pub fn video_kbps(&self, duration: f64) -> u32 {
         if duration <= 0.0 {
             return 0;
         }
-        let total = self.target_mib * 8192.0 * (1.0 - self.margin_pct / 100.0);
+        let total = self.target_mib * 8388.608 * (1.0 - self.safety_pct / 100.0);
         let audio = if self.audio { self.audio_kbps as f64 * duration } else { 0.0 };
         ((total - audio) / duration).floor().max(1.0) as u32
     }
@@ -481,11 +483,15 @@ mod tests {
     }
 
     #[test]
-    fn bitrate_matches_bat_convention() {
+    fn bitrate_uses_true_mib() {
+        // 4 MiB = 4194304 bytes = 33554.432 kbits.
+        let s = RenderSettings { target_mib: 4.0, audio: false, safety_pct: 0.0, ..Default::default() };
+        assert_eq!(s.video_kbps(13.0), 2581); // 33554.432 / 13
+        let s = RenderSettings { target_mib: 4.0, audio: true, audio_kbps: 96, safety_pct: 0.0, ..Default::default() };
+        assert_eq!(s.video_kbps(49.0), (33554.432 / 49.0 - 96.0) as u32);
+        // Default 2% margin.
         let s = RenderSettings { target_mib: 4.0, audio: false, ..Default::default() };
-        assert_eq!(s.video_kbps(13.0), 2520); // 32768 / 13
-        let s = RenderSettings { target_mib: 4.0, audio: true, audio_kbps: 96, ..Default::default() };
-        assert_eq!(s.video_kbps(49.0), (32768.0 / 49.0 - 96.0) as u32);
+        assert_eq!(s.video_kbps(13.0), (33554.432 * 0.98 / 13.0) as u32);
     }
 
     #[test]

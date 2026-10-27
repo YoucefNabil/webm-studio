@@ -14,6 +14,16 @@ pub struct VideoInfo {
     pub height: u32,
     pub fps: f64,
     pub codec: String,
+    /// The stream carries no YUV matrix tag (RGB sources report one, so they count as tagged).
+    pub untagged_matrix: bool,
+}
+
+impl VideoInfo {
+    /// For untagged sources, the matrix players assume (mpv's rule: HD → BT.709, SD → BT.601),
+    /// so the render converts from what the user actually sees. None = trust the tag.
+    pub fn assumed_matrix(&self) -> Option<&'static str> {
+        self.untagged_matrix.then(|| if self.width >= 1280 || self.height > 576 { "bt709" } else { "bt601" })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +87,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
                     height: dec.height(),
                     fps,
                     codec: dec.codec().map(|c| c.name().to_string()).unwrap_or_default(),
+                    untagged_matrix: dec.color_space() == ff::color::Space::Unspecified,
                 });
                 if duration <= 0.0 {
                     duration = sdur;

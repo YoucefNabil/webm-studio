@@ -118,11 +118,17 @@ fn build_graph(project: &Project, media: &[MediaInfo], w: u32, h: u32, with_audi
             gap(&mut g, seg, a - t);
             seg += 1;
         }
-        let path = &media.get(c.media).ok_or_else(|| anyhow!("missing media"))?.path;
-        let i = add_input(&mut inputs, path, c.src_at(a), b - a);
+        let m = media.get(c.media).ok_or_else(|| anyhow!("missing media"))?;
+        let i = add_input(&mut inputs, &m.path, c.src_at(a), b - a);
+        // Everything is converted to BT.709 limited range (matching the output tags). Tagged
+        // sources convert from their tag; untagged ones from what players would assume.
+        let in_matrix = match m.video.as_ref().and_then(|v| v.assumed_matrix()) {
+            Some(mx) => format!(":in_color_matrix={mx}"),
+            None => String::new(),
+        };
         let _ = write!(
             g,
-            "[{i}:v:0]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format={pix},trim=duration={},setpts=PTS-STARTPTS[v{seg}];",
+            "[{i}:v:0]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease{in_matrix}:out_color_matrix=bt709:out_range=tv,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format={pix},trim=duration={},setpts=PTS-STARTPTS[v{seg}];",
             f6(b - a)
         );
         seg += 1;
@@ -136,10 +142,13 @@ fn build_graph(project: &Project, media: &[MediaInfo], w: u32, h: u32, with_audi
         let _ = write!(g, "[v{k}]");
     }
     let _ = write!(g, "concat=n={seg}:v=1:a=0[vc];");
+    // Pixels are already BT.709 limited (see the scale above); this only labels the frames,
+    // since ffmpeg takes primaries/transfer from the frames rather than the -color_* flags.
+    let tags = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv";
     if s.denoise {
-        let _ = write!(g, "[vc]hqdn3d={}[vout]", s.denoise_params.trim());
+        let _ = write!(g, "[vc]hqdn3d={},{tags}[vout]", s.denoise_params.trim());
     } else {
-        g.push_str("[vc]null[vout]");
+        let _ = write!(g, "[vc]{tags}[vout]");
     }
 
     // ---- audio: every audible clip delayed to its position, mixed over silence ----
@@ -229,6 +238,10 @@ pub fn plan(project: &Project, media: &[MediaInfo]) -> Result<RenderPlan> {
             "-tile-rows".into(), tr.to_string(),
             "-aq-mode".into(), s.aq_mode.to_string(),
             "-static-thresh".into(), "0".into(),
+            "-colorspace".into(), "bt709".into(),
+            "-color_primaries".into(), "bt709".into(),
+            "-color_trc".into(), "bt709".into(),
+            "-color_range".into(), "tv".into(),
             "-map_metadata".into(), "-1".into(),
             "-map_chapters".into(), "-1".into(),
             "-t".into(), f6(dur),
@@ -260,7 +273,8 @@ pub fn plan(project: &Project, media: &[MediaInfo]) -> Result<RenderPlan> {
         pass2.push("-an".into());
     }
     pass2.extend(common(s.quality_preset, 2));
-    pass2.extend(["-f".into(), "webm".into(), output.to_string_lossy().into_owned()]);
+    // Index at the front so browsers/embeds can seek without reading the whole file first.
+    pass2.extend(["-f".into(), "webm".into(), "-cues_to_front".into(), "1".into(), output.to_string_lossy().into_owned()]);
 
     Ok(RenderPlan { ffmpeg: find_ffmpeg(&s.ffmpeg_path), pass1, pass2, duration: dur, output, out_w: w, out_h: h, video_kbps: kbps, workdir })
 }

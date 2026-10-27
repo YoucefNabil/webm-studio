@@ -924,7 +924,7 @@ impl App {
                     });
                 });
                 ui.end_row();
-                ui.label("Quality preset").on_hover_text("libvpx -speed for pass 2. 0 = slowest / best.");
+                ui.label("Quality preset (speed)").on_hover_text("libvpx -speed for pass 2 (the pass that makes the file). 0 = slowest / best. Pass 1 speed is under Advanced.");
                 ui.add(egui::Slider::new(&mut s.quality_preset, 0..=8));
                 ui.end_row();
                 ui.label("Audio");
@@ -951,6 +951,9 @@ impl App {
                     ui.end_row();
                     ui.label("aq-mode").on_hover_text("0 = stick to bitrate, 2 = efficient (may undershoot)");
                     ui.add(egui::Slider::new(&mut s.aq_mode, 0..=4));
+                ui.label("Safety margin").on_hover_text("Aim this far under the target to absorb WebM container overhead and 2-pass overshoot. 2% lands around 3.90–3.92 MiB on a 4 MiB target.");
+                ui.add(egui::Slider::new(&mut s.safety_pct, 0.0..=10.0).step_by(0.1).fixed_decimals(1).suffix(" %"));
+                ui.end_row();
                     ui.end_row();
                     ui.label("auto-alt-ref").on_hover_text("1 = stick to bitrate, up to 6 = more efficient for low motion");
                     ui.add(egui::Slider::new(&mut s.auto_alt_ref, 0..=6));
@@ -975,9 +978,6 @@ impl App {
                             ui.label(RichText::new(format!("{c} / {r}")).color(crate::theme::DIM));
                         }
                     });
-                    ui.end_row();
-                    ui.label("Safety margin");
-                    ui.add(egui::DragValue::new(&mut s.margin_pct).range(0.0..=50.0).speed(0.1).suffix(" %"));
                     ui.end_row();
                     ui.label("ffmpeg.exe");
                     ui.horizontal(|ui| {
