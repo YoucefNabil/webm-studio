@@ -107,6 +107,10 @@ pub struct App {
     render_job: Option<RenderJob>,
     render_error: Option<String>,
     saved_settings: RenderSettings,
+    saved_prefs: Prefs,
+    /// Last folders used by the import and project dialogs.
+    import_dir: Option<PathBuf>,
+    project_dir: Option<PathBuf>,
 
     project_path: Option<PathBuf>,
     pub status: String,
@@ -115,6 +119,27 @@ pub struct App {
 
 fn settings_file() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("WebmStudio").join("settings.json"))
+}
+
+fn prefs_file() -> Option<PathBuf> {
+    settings_file().map(|p| p.with_file_name("prefs.json"))
+}
+
+/// Editor toggles and dialog folders remembered across launches (render settings live in settings.json).
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Prefs {
+    loop_play: bool,
+    snapping: bool,
+    ignore_grouping: bool,
+    import_dir: Option<PathBuf>,
+    project_dir: Option<PathBuf>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { loop_play: false, snapping: true, ignore_grouping: false, import_dir: None, project_dir: None }
+    }
 }
 
 impl App {
@@ -126,6 +151,10 @@ impl App {
         let video = VideoEngine::new(move || c2.request_repaint());
         let audio = AudioEngine::new();
         let settings: RenderSettings = settings_file()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        let prefs: Prefs = prefs_file()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
@@ -147,7 +176,7 @@ impl App {
             paused_at: None,
             play_start_t: 0.0,
             play_instant: Instant::now(),
-            loop_play: false,
+            loop_play: prefs.loop_play,
             video,
             audio,
             pending_frame: None,
@@ -155,11 +184,14 @@ impl App {
             preview_has_image: false,
             view: TimelineView { px_per_sec: 40.0, scroll: 0.0, fit_pending: false, reveal: false, bar_drag: None },
             drag: None,
-            snapping: true,
-            ignore_grouping: false,
+            snapping: prefs.snapping,
+            ignore_grouping: prefs.ignore_grouping,
             render_job: None,
             render_error: None,
             saved_settings: settings,
+            import_dir: prefs.import_dir.clone(),
+            project_dir: prefs.project_dir.clone(),
+            saved_prefs: prefs,
             project_path: None,
             status: "Drop video files here, or File ▸ Import (Ctrl+I)".into(),
             ctx,
@@ -542,12 +574,13 @@ impl App {
     fn save_project(&mut self, save_as: bool) {
         let path = match (&self.project_path, save_as) {
             (Some(p), false) => Some(p.clone()),
-            _ => rfd::FileDialog::new().add_filter("WebM Studio project", &["wsproj"]).set_file_name("project.wsproj").save_file(),
+            _ => self.project_dialog().set_file_name("project.wsproj").save_file(),
         };
         let Some(path) = path else { return };
         match serde_json::to_string_pretty(&self.project).map_err(anyhow::Error::from).and_then(|s| Ok(std::fs::write(&path, s)?)) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
+                self.project_dir = path.parent().map(Path::to_path_buf);
                 self.project_path = Some(path);
             }
             Err(e) => self.status = format!("Save failed: {e}"),
@@ -555,7 +588,8 @@ impl App {
     }
 
     fn open_project_dialog(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().add_filter("WebM Studio project", &["wsproj"]).pick_file() {
+        if let Some(p) = self.project_dialog().pick_file() {
+            self.project_dir = p.parent().map(Path::to_path_buf);
             self.open_project(&p);
         }
     }
@@ -593,8 +627,21 @@ impl App {
         self.timeline_changed();
     }
 
+    fn project_dialog(&self) -> rfd::FileDialog {
+        let d = rfd::FileDialog::new().add_filter("WebM Studio project", &["wsproj"]);
+        match &self.project_dir {
+            Some(dir) => d.set_directory(dir),
+            None => d,
+        }
+    }
+
     fn import_dialog(&mut self) {
-        if let Some(files) = rfd::FileDialog::new().add_filter("Media", VIDEO_EXTS).add_filter("All files", &["*"]).pick_files() {
+        let mut d = rfd::FileDialog::new().add_filter("Media", VIDEO_EXTS).add_filter("All files", &["*"]);
+        if let Some(dir) = &self.import_dir {
+            d = d.set_directory(dir);
+        }
+        if let Some(files) = d.pick_files() {
+            self.import_dir = files.first().and_then(|f| f.parent()).map(Path::to_path_buf);
             for f in files {
                 self.import(f, None);
             }
@@ -904,6 +951,9 @@ impl App {
                 ui.label("Target size (MiB)");
                 ui.add(egui::DragValue::new(&mut s.target_mib).range(0.1..=4096.0).speed(0.05).max_decimals(2));
                 ui.end_row();
+                ui.label("Safety margin").on_hover_text("Aim this far under the target to absorb WebM container overhead and 2-pass overshoot. 2% lands around 3.90–3.92 MiB on a 4 MiB target.");
+                ui.add(egui::Slider::new(&mut s.safety_pct, 0.0..=10.0).step_by(0.1).fixed_decimals(1).suffix(" %"));
+                ui.end_row();
                 ui.label("Resolution (height)");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut s.height).range(64..=4320).speed(2.0));
@@ -951,9 +1001,6 @@ impl App {
                     ui.end_row();
                     ui.label("aq-mode").on_hover_text("0 = stick to bitrate, 2 = efficient (may undershoot)");
                     ui.add(egui::Slider::new(&mut s.aq_mode, 0..=4));
-                ui.label("Safety margin").on_hover_text("Aim this far under the target to absorb WebM container overhead and 2-pass overshoot. 2% lands around 3.90–3.92 MiB on a 4 MiB target.");
-                ui.add(egui::Slider::new(&mut s.safety_pct, 0.0..=10.0).step_by(0.1).fixed_decimals(1).suffix(" %"));
-                ui.end_row();
                     ui.end_row();
                     ui.label("auto-alt-ref").on_hover_text("1 = stick to bitrate, up to 6 = more efficient for low motion");
                     ui.add(egui::Slider::new(&mut s.auto_alt_ref, 0..=6));
@@ -1154,6 +1201,20 @@ impl App {
                 let _ = std::fs::create_dir_all(p.parent().unwrap());
                 let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
             }
+        }
+        let prefs = Prefs {
+            loop_play: self.loop_play,
+            snapping: self.snapping,
+            ignore_grouping: self.ignore_grouping,
+            import_dir: self.import_dir.clone(),
+            project_dir: self.project_dir.clone(),
+        };
+        if prefs != self.saved_prefs {
+            if let Some(p) = prefs_file() {
+                let _ = std::fs::create_dir_all(p.parent().unwrap());
+                let _ = std::fs::write(p, serde_json::to_string_pretty(&prefs).unwrap_or_default());
+            }
+            self.saved_prefs = prefs;
         }
     }
 }
